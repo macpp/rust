@@ -349,6 +349,7 @@ rpc_encode_decode!(
     enum Level {
         Error,
         Warning,
+        WarningLint(s),
         Note,
         Help,
     }

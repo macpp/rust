@@ -464,3 +464,28 @@ impl ProcMacro {
         ProcMacro::Bang { name, client: Client::expand1(expand) }
     }
 }
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ProcMacroLint {
+    pub name: &'static str,
+}
+
+impl ProcMacroLint {
+    pub const fn new(name: &'static str) -> Self {
+        ProcMacroLint { name }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ProcMacroDecls {
+    pub macros: &'static [ProcMacro],
+    pub lints: &'static [ProcMacroLint],
+}
+
+impl ProcMacroDecls {
+    pub const fn new(macros: &'static [ProcMacro], lints: &'static [ProcMacroLint]) -> Self {
+        ProcMacroDecls { macros, lints }
+    }
+}

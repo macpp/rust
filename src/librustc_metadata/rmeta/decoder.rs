@@ -32,7 +32,7 @@ use std::num::NonZeroUsize;
 use std::u32;
 
 use log::debug;
-use proc_macro::bridge::client::ProcMacro;
+use proc_macro::bridge::client::{ProcMacro, ProcMacroDecls};
 use rustc_serialize::{opaque, Decodable, Decoder, SpecializedDecoder};
 use syntax::ast::{self, Ident};
 use syntax::attr;
@@ -76,7 +76,7 @@ crate struct CrateMetadata {
     /// so pre-decoding can probably be avoided.
     trait_impls: FxHashMap<(u32, DefIndex), Lazy<[DefIndex]>>,
     /// Proc macro descriptions for this crate, if it's a proc macro crate.
-    raw_proc_macros: Option<&'static [ProcMacro]>,
+    raw_proc_macros: Option<&'static ProcMacroDecls>,
     /// Source maps for code from the crate.
     source_map_import_info: Once<Vec<ImportedSourceFile>>,
     /// Used for decoding interpret::AllocIds in a cached & thread-safe manner.
@@ -570,7 +570,7 @@ impl<'a, 'tcx> CrateMetadata {
         sess: &Session,
         blob: MetadataBlob,
         root: CrateRoot<'static>,
-        raw_proc_macros: Option<&'static [ProcMacro]>,
+        raw_proc_macros: Option<&'static ProcMacroDecls>,
         cnum: CrateNum,
         cnum_map: CrateNumMap,
         dep_kind: DepKind,
@@ -641,7 +641,7 @@ impl<'a, 'tcx> CrateMetadata {
         // Failing to do so will result in incorrect data being associated
         // with proc macros when deserialized.
         let pos = self.root.proc_macro_data.unwrap().decode(self).position(|i| i == id).unwrap();
-        &self.raw_proc_macros.unwrap()[pos]
+        &self.raw_proc_macros.unwrap().macros[pos]
     }
 
     fn item_name(&self, item_index: DefIndex) -> Symbol {

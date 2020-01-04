@@ -39,8 +39,8 @@ use syntax_pos::hygiene::MacroKind;
 use syntax_pos::Span;
 
 pub use crate::lint::context::{
-    check_ast_crate, check_crate, late_lint_mod, BufferedEarlyLint, CheckLintNameResult,
-    EarlyContext, LateContext, LintContext, LintStore,
+    check_ast_crate, check_crate, emit_proc_macro_lints, late_lint_mod, BufferedEarlyLint,
+    CheckLintNameResult, EarlyContext, LateContext, LintContext, LintStore,
 };
 
 pub use rustc_session::lint::{FutureIncompatibleInfo, Level, Lint, LintId};

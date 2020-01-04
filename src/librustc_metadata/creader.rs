@@ -21,7 +21,7 @@ use std::path::Path;
 use std::{cmp, fs};
 
 use log::{debug, info, log_enabled};
-use proc_macro::bridge::client::ProcMacro;
+use proc_macro::bridge::client::ProcMacroDecls;
 use syntax::ast;
 use syntax::attr;
 use syntax::edition::Edition;
@@ -566,7 +566,7 @@ impl<'a> CrateLoader<'a> {
         path: &Path,
         disambiguator: CrateDisambiguator,
         span: Span,
-    ) -> &'static [ProcMacro] {
+    ) -> &'static ProcMacroDecls {
         use crate::dynamic_lib::DynamicLibrary;
         use std::env;
 
@@ -583,13 +583,16 @@ impl<'a> CrateLoader<'a> {
                 Ok(f) => f,
                 Err(err) => self.sess.span_fatal(span, &err),
             };
-            *(sym as *const &[ProcMacro])
+            *(sym as *const &ProcMacroDecls)
         };
 
         // Intentionally leak the dynamic library. We can't ever unload it
         // since the library can make things that will live arbitrarily long.
         std::mem::forget(lib);
 
+        for lint in decls.lints.iter() {
+            self.sess.maybe_proc_macro_lints.mark_lint_as_used(lint.name);
+        }
         decls
     }
 

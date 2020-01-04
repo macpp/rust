@@ -641,6 +641,7 @@ symbols! {
         rustc_peek_indirectly_mutable,
         rustc_private,
         rustc_proc_macro_decls,
+        rustc_proc_macro_lint,
         rustc_promotable,
         rustc_regions,
         rustc_stable,

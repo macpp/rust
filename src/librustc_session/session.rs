@@ -133,6 +133,8 @@ pub struct Session {
     /// Mapping from ident span to path span for paths that don't exist as written, but that
     /// exist under `std`. For example, wrote `str::from_utf8` instead of `std::str::from_utf8`.
     pub confused_type_with_std_module: Lock<FxHashMap<Span, Span>>,
+
+    pub maybe_proc_macro_lints: MaybeProcMacroLints,
 }
 
 pub struct PerfStats {
@@ -1080,6 +1082,7 @@ fn build_session_(
         driver_lint_caps,
         trait_methods_not_found: Lock::new(Default::default()),
         confused_type_with_std_module: Lock::new(Default::default()),
+        maybe_proc_macro_lints: Default::default(),
     };
 
     validate_commandline_args_with_session_available(&sess);
@@ -1181,6 +1184,78 @@ pub enum IncrCompSession {
     /// occurred. It indicates that the contents of the session directory must
     /// not be used, since they might be invalid.
     InvalidBecauseOfErrors { session_directory: PathBuf },
+}
+
+#[derive(Default)]
+pub struct MaybeProcMacroLints {
+    pub unknown_lints: Lock<Vec<UnknownLint>>,
+    pub proc_macro_lints: Lock<Vec<&'static lint::Lint>>,
+}
+
+impl MaybeProcMacroLints {
+    pub fn add_unknown_lint(&self, name: &str, emit: Box<dyn FnOnce(&Session)>) {
+        self.unknown_lints.with_lock(|lints| {
+            match lints.iter_mut().filter(|x| x.name == name).nth(0) {
+                Some(x) => x.emit.push(emit),
+                None => {
+                    lints.push(UnknownLint { name: name.to_string(), emit: vec![emit] });
+                }
+            }
+        });
+    }
+
+    pub fn mark_lint_as_used(&self, name: &str) {
+        self.unknown_lints.with_lock(|lints| {
+            let to_remove =
+                lints.iter().enumerate().filter(|x| x.1.name == name).map(|x| x.0).nth(0);
+            if let Some(to_remove) = to_remove {
+                lints.remove(to_remove);
+            }
+        });
+        self.proc_macro_lints.with_lock(|lints| Self::maybe_create_lint(lints, name));
+    }
+
+    fn maybe_create_lint(lints: &mut Vec<&'static lint::Lint>, name: &str) -> &'static lint::Lint {
+        match lints.iter().filter(|x| x.name == name).nth(0) {
+            Some(x) => x,
+            None => {
+                let lint_name: &'static str = Box::leak(name.to_string().into_boxed_str());
+                let lint = lint::Lint {
+                    name: lint_name,
+                    default_level: lint::Level::Warn,
+                    desc: "Proc macro declared lint",
+                    edition_lint_opts: None,
+                    report_in_external_macro: true,
+                    future_incompatible: None,
+                    is_plugin: true,
+                };
+                let lint = Box::leak(Box::new(lint));
+                lints.push(lint);
+                lint
+            }
+        }
+    }
+    pub fn get_proc_macro_lint(&self, name: &str) -> Option<&'static lint::Lint> {
+        let lints = self.proc_macro_lints.lock();
+        match lints.iter().filter(|x| x.name == name).nth(0) {
+            Some(x) => Some(x),
+            None => None,
+        }
+    }
+    pub fn emit_unknown_lints(&self, sess: &Session) {
+        self.unknown_lints.with_lock(|lints| {
+            for mut lint in lints.drain(..) {
+                for emit in lint.emit.drain(..) {
+                    emit(sess);
+                }
+            }
+        });
+    }
+}
+#[derive(Default)]
+pub struct UnknownLint {
+    pub name: String,
+    pub emit: Vec<Box<dyn FnOnce(&Session)>>,
 }
 
 pub fn early_error(output: config::ErrorOutputType, msg: &str) -> ! {

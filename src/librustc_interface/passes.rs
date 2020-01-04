@@ -428,6 +428,27 @@ fn configure_and_expand_inner<'a>(
             resolver.lint_buffer().buffer_lint(lint_id, id, span, &msg);
         }
     });
+    sess.maybe_proc_macro_lints.emit_unknown_lints(sess);
+    sess.maybe_proc_macro_lints.proc_macro_lints.with_lock(|lints| {
+        for lint in lints.iter() {
+            lint_store.register_proc_macro_lint(lint);
+        }
+    });
+    sess.parse_sess.buffered_proc_macro_lints.with_lock(|lints| {
+        let lints: Vec<_> = lints
+            .drain(..)
+            .map(|x| {
+                (
+                    x.0,
+                    sess.maybe_proc_macro_lints
+                        .get_proc_macro_lint(&x.1)
+                        .expect("missing lint from proc_macro"),
+                )
+            })
+            .collect();
+
+        rustc::lint::emit_proc_macro_lints(sess, lint_store, &krate, lints);
+    });
 
     Ok((krate, resolver))
 }
@@ -451,7 +472,6 @@ pub fn lower_to_hir<'res, 'tcx>(
 
         hir::map::Forest::new(hir_crate, &dep_graph)
     });
-
     time(sess, "early lint checks", || {
         lint::check_ast_crate(
             sess,

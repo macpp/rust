@@ -436,6 +436,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
 
     rustc_attr!(rustc_builtin_macro, Whitelisted, template!(Word), IMPL_DETAIL),
     rustc_attr!(rustc_proc_macro_decls, Normal, template!(Word), INTERNAL_UNSTABLE),
+    rustc_attr!(rustc_proc_macro_lint, Normal, template!(Word), INTERNAL_UNSTABLE),
     rustc_attr!(
         rustc_macro_transparency, Whitelisted,
         template!(NameValueStr: "transparent|semitransparent|opaque"),

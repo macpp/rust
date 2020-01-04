@@ -10,7 +10,7 @@ use syntax::util::comments;
 use syntax_pos::symbol::{kw, sym, Symbol};
 use syntax_pos::{BytePos, FileName, MultiSpan, Pos, SourceFile, Span};
 
-use errors::Diagnostic;
+use errors::{Diagnostic, DiagnosticId};
 use rustc_data_structures::sync::Lrc;
 
 use pm::bridge::{server, TokenTree};
@@ -271,6 +271,7 @@ impl ToInternal<errors::Level> for Level {
             Level::Warning => errors::Level::Warning,
             Level::Note => errors::Level::Note,
             Level::Help => errors::Level::Help,
+            Level::WarningLint(_) => errors::Level::Warning,
             _ => unreachable!("unknown proc_macro::Level variant: {:?}", self),
         }
     }
@@ -382,8 +383,13 @@ impl server::Types for Rustc<'_> {
     type Literal = Literal;
     type SourceFile = Lrc<SourceFile>;
     type MultiSpan = Vec<Span>;
-    type Diagnostic = Diagnostic;
+    type Diagnostic = DiagnosticKind;
     type Span = Span;
+}
+
+pub enum DiagnosticKind {
+    Diagnostic(Diagnostic),
+    DiagnosticLint(Diagnostic, String),
 }
 
 impl server::TokenStream for Rustc<'_> {
@@ -622,9 +628,15 @@ impl server::MultiSpan for Rustc<'_> {
 
 impl server::Diagnostic for Rustc<'_> {
     fn new(&mut self, level: Level, msg: &str, spans: Self::MultiSpan) -> Self::Diagnostic {
-        let mut diag = Diagnostic::new(level.to_internal(), msg);
+        let mut diag = Diagnostic::new(level.clone().to_internal(), msg);
         diag.set_span(MultiSpan::from_spans(spans));
-        diag
+        match level {
+            Level::WarningLint(lint_name) => {
+                diag.code = Some(DiagnosticId::Lint(lint_name.clone()));
+                DiagnosticKind::DiagnosticLint(diag, lint_name)
+            }
+            _ => DiagnosticKind::Diagnostic(diag),
+        }
     }
     fn sub(
         &mut self,
@@ -633,10 +645,21 @@ impl server::Diagnostic for Rustc<'_> {
         msg: &str,
         spans: Self::MultiSpan,
     ) {
-        diag.sub(level.to_internal(), msg, MultiSpan::from_spans(spans), None);
+        match diag {
+            DiagnosticKind::DiagnosticLint(diag, _) | DiagnosticKind::Diagnostic(diag) => {
+                diag.sub(level.to_internal(), msg, MultiSpan::from_spans(spans), None)
+            }
+        };
     }
     fn emit(&mut self, diag: Self::Diagnostic) {
-        self.sess.span_diagnostic.emit_diagnostic(&diag);
+        match diag {
+            DiagnosticKind::DiagnosticLint(diag, lint_id) => {
+                self.sess.buffered_proc_macro_lints.with_lock(|lints| {
+                    lints.push((diag, lint_id));
+                });
+            }
+            DiagnosticKind::Diagnostic(diag) => self.sess.span_diagnostic.emit_diagnostic(&diag),
+        };
     }
 }
 

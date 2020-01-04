@@ -67,6 +67,8 @@ pub struct LintStore {
 
     /// Map of registered lint groups to what lints they expand to.
     lint_groups: FxHashMap<&'static str, LintGroup>,
+
+    proc_macro_lints: rustc_data_structures::sync::Lock<FxHashMap<&'static str, &'static Lint>>,
 }
 
 /// Lints that are buffered up early on in the `Session` before the
@@ -123,6 +125,7 @@ pub enum CheckLintNameResult<'a> {
     /// added to the `LintStore`. Otherwise the `LintId` will be
     /// returned as if it where a rustc lint.
     Tool(Result<&'a [LintId], (Option<&'a [LintId]>, String)>),
+    ProcMacro(&'static Lint),
 }
 
 impl LintStore {
@@ -135,6 +138,7 @@ impl LintStore {
             late_module_passes: vec![],
             by_name: Default::default(),
             lint_groups: Default::default(),
+            proc_macro_lints: Default::default(),
         }
     }
 
@@ -219,6 +223,14 @@ impl LintStore {
         }
     }
 
+    pub fn register_proc_macro_lint(&self, lint: &'static Lint) {
+        self.proc_macro_lints.with_lock(|lints| {
+            if lints.insert(lint.name, lint).is_some() {
+                bug!("duplicate specification of lint {}", lint.name)
+            }
+        });
+    }
+
     pub fn register_group_alias(&mut self, lint_name: &'static str, alias: &'static str) {
         self.lint_groups.insert(
             alias,
@@ -292,7 +304,7 @@ impl LintStore {
     /// Checks the validity of lint names derived from the command line
     pub fn check_lint_name_cmdline(&self, sess: &Session, lint_name: &str, level: Level) {
         let db = match self.check_lint_name(lint_name, None) {
-            CheckLintNameResult::Ok(_) => None,
+            CheckLintNameResult::Ok(_) | CheckLintNameResult::ProcMacro(_) => None,
             CheckLintNameResult::Warning(ref msg, _) => Some(sess.struct_warn(msg)),
             CheckLintNameResult::NoLint(suggestion) => {
                 let mut err = struct_err!(sess, E0602, "unknown lint: `{}`", lint_name);
@@ -371,23 +383,31 @@ impl LintStore {
                 format!("lint `{}` has been removed: `{}`", complete_name, reason),
                 None,
             ),
-            None => match self.lint_groups.get(&*complete_name) {
-                // If neither the lint, nor the lint group exists check if there is a `clippy::`
-                // variant of this lint
-                None => self.check_tool_name_for_backwards_compat(&complete_name, "clippy"),
-                Some(LintGroup { lint_ids, depr, .. }) => {
-                    // Check if the lint group name is deprecated
-                    if let Some(LintAlias { name, silent }) = depr {
-                        let LintGroup { lint_ids, .. } = self.lint_groups.get(name).unwrap();
-                        return if *silent {
-                            CheckLintNameResult::Ok(&lint_ids)
-                        } else {
-                            CheckLintNameResult::Tool(Err((Some(&lint_ids), name.to_string())))
-                        };
+            None => {
+                {
+                    let proc_lints = self.proc_macro_lints.lock();
+                    if let Some(l) = proc_lints.get(&*complete_name) {
+                        return CheckLintNameResult::ProcMacro(l);
                     }
-                    CheckLintNameResult::Ok(&lint_ids)
                 }
-            },
+                match self.lint_groups.get(&*complete_name) {
+                    // If neither the lint, nor the lint group exists check if there is a `clippy::`
+                    // variant of this lint
+                    None => self.check_tool_name_for_backwards_compat(&complete_name, "clippy"),
+                    Some(LintGroup { lint_ids, depr, .. }) => {
+                        // Check if the lint group name is deprecated
+                        if let Some(LintAlias { name, silent }) = depr {
+                            let LintGroup { lint_ids, .. } = self.lint_groups.get(name).unwrap();
+                            return if *silent {
+                                CheckLintNameResult::Ok(&lint_ids)
+                            } else {
+                                CheckLintNameResult::Tool(Err((Some(&lint_ids), name.to_string())))
+                            };
+                        }
+                        CheckLintNameResult::Ok(&lint_ids)
+                    }
+                }
+            }
             Some(&Id(ref id)) => CheckLintNameResult::Ok(slice::from_ref(id)),
         }
     }
@@ -1565,4 +1585,27 @@ pub fn check_ast_crate<T: EarlyLintPass>(
             }
         }
     }
+}
+
+pub fn emit_proc_macro_lints(
+    sess: &Session,
+    lint_store: &LintStore,
+    krate: &ast::Crate,
+    mut lints: Vec<(errors::Diagnostic, &'static Lint)>,
+) {
+    let mut context = EarlyContext::new(sess, lint_store, &krate, Default::default(), false);
+    let push = context.builder.push(&krate.attrs, &context.lint_store);
+
+    for mut diag in lints.drain(..) {
+        let lint = diag.1;
+        let message = diag.0.message();
+        let span = diag.0.span;
+        let mut new_diag = context.struct_span_lint(lint, span, &message);
+
+        for sub in diag.0.children.drain(..) {
+            new_diag.sub(sub.level, &sub.message(), Some(sub.span));
+        }
+        new_diag.emit();
+    }
+    context.builder.pop(push);
 }

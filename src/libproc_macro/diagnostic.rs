@@ -2,13 +2,15 @@ use crate::Span;
 
 /// An enum representing a diagnostic level.
 #[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Level {
     /// An error.
     Error,
     /// A warning.
     Warning,
+    /// A lint-associated Warning
+    WarningLint(String),
     /// A note.
     Note,
     /// A help message.
@@ -123,7 +125,7 @@ impl Diagnostic {
     /// Returns the diagnostic `level` for `self`.
     #[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
     pub fn level(&self) -> Level {
-        self.level
+        self.level.clone()
     }
 
     /// Sets the level in `self` to `level`.
@@ -183,4 +185,21 @@ impl Diagnostic {
         }
         diag.emit();
     }
+}
+
+/// Declares lint used by procedural macro
+/// example:
+/// ```rust
+/// declare_lint!(my_lint_name);
+/// ```
+#[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
+#[allow_internal_unstable(rustc_attrs, proc_macro_internals)]
+#[macro_export]
+macro_rules! declare_lint {
+    ($id: ident) => {
+        #[allow(non_upper_case_globals)]
+        #[rustc_proc_macro_lint]
+        pub static $id: $crate::bridge::client::ProcMacroLint =
+            $crate::bridge::client::ProcMacroLint::new(stringify!($id));
+    };
 }

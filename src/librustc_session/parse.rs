@@ -83,6 +83,7 @@ pub struct ParseSess {
     pub gated_spans: GatedSpans,
     /// The parser has reached `Eof` due to an unclosed brace. Used to silence unnecessary errors.
     pub reached_eof: Lock<bool>,
+    pub buffered_proc_macro_lints: Lock<Vec<(rustc_errors::Diagnostic, String)>>,
 }
 
 impl ParseSess {
@@ -107,6 +108,7 @@ impl ParseSess {
             injected_crate_name: Once::new(),
             gated_spans: GatedSpans::default(),
             reached_eof: Lock::new(false),
+            buffered_proc_macro_lints: Default::default(),
         }
     }
 

@@ -296,6 +296,10 @@ impl<'a> LintLevelsBuilder<'a> {
                             specs.insert(*id, (level, src));
                         }
                     }
+                    CheckLintNameResult::ProcMacro(proc_lint) => {
+                        let src = LintSource::Node(name, li.span(), reason);
+                        specs.insert(LintId::of(proc_lint), (level, src));
+                    }
 
                     CheckLintNameResult::Tool(result) => {
                         match result {
@@ -379,29 +383,36 @@ impl<'a> LintLevelsBuilder<'a> {
                         err.emit();
                     }
                     CheckLintNameResult::NoLint(suggestion) => {
+                        let name = name.to_string();
                         let lint = builtin::UNKNOWN_LINTS;
                         let (level, src) =
                             self.sets.get_lint_level(lint, self.cur, Some(&specs), self.sess);
-                        let msg = format!("unknown lint: `{}`", name);
-                        let mut db = lint::struct_lint_level(
-                            self.sess,
-                            lint,
-                            level,
-                            src,
-                            Some(li.span().into()),
-                            &msg,
+                        let msg = format!("unknown lint: `{}`", &name);
+
+                        let span = li.span().clone();
+                        self.sess.maybe_proc_macro_lints.add_unknown_lint(
+                            &name,
+                            Box::new(move |sess| {
+                                let mut db = lint::struct_lint_level(
+                                    sess,
+                                    lint,
+                                    level,
+                                    src,
+                                    Some(span.into()),
+                                    &msg,
+                                );
+                                if let Some(suggestion) = suggestion {
+                                    db.span_suggestion(
+                                        span,
+                                        "did you mean",
+                                        suggestion.to_string(),
+                                        Applicability::MachineApplicable,
+                                    );
+                                }
+
+                                db.emit();
+                            }),
                         );
-
-                        if let Some(suggestion) = suggestion {
-                            db.span_suggestion(
-                                li.span(),
-                                "did you mean",
-                                suggestion.to_string(),
-                                Applicability::MachineApplicable,
-                            );
-                        }
-
-                        db.emit();
                     }
                 }
             }

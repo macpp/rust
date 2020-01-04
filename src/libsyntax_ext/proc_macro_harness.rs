@@ -1,6 +1,5 @@
-use std::mem;
-
 use smallvec::smallvec;
+use std::mem;
 use syntax::ast::{self, Ident};
 use syntax::attr;
 use syntax::expand::is_proc_macro_attr;
@@ -37,8 +36,14 @@ enum ProcMacro {
     Def(ProcMacroDef),
 }
 
+struct ProcMacroLint {
+    lint_name: Ident,
+    span: Span,
+}
+
 struct CollectProcMacros<'a> {
     macros: Vec<ProcMacro>,
+    lints: Vec<ProcMacroLint>,
     in_root: bool,
     handler: &'a errors::Handler,
     is_proc_macro_crate: bool,
@@ -60,6 +65,7 @@ pub fn inject(
 
     let mut collect = CollectProcMacros {
         macros: Vec::new(),
+        lints: Vec::new(),
         in_root: true,
         handler,
         is_proc_macro_crate,
@@ -73,7 +79,7 @@ pub fn inject(
     // for any reason, you must also update 'raw_proc_macro'
     // in src/librustc_metadata/decoder.rs
     let macros = collect.macros;
-
+    let lints = collect.lints;
     if !is_proc_macro_crate {
         return krate;
     }
@@ -86,8 +92,7 @@ pub fn inject(
         return krate;
     }
 
-    krate.module.items.push(mk_decls(&mut cx, &macros));
-
+    krate.module.items.push(mk_decls(&mut cx, &macros, &lints));
     krate
 }
 
@@ -232,6 +237,20 @@ impl<'a> CollectProcMacros<'a> {
             self.handler.span_err(item.span, msg);
         }
     }
+
+    fn collect_lint(&mut self, item: &'a ast::Item) {
+        if self.in_root && item.vis.node.is_pub() {
+            self.lints.push(ProcMacroLint { span: item.span, lint_name: item.ident });
+        } else {
+            let msg = if !self.in_root {
+                "lints declared by proc macro must \
+                 currently reside in the root of the crate"
+            } else {
+                "proc_macro lints must be `pub`"
+            };
+            self.handler.span_err(item.span, msg);
+        }
+    }
 }
 
 impl<'a> Visitor<'a> for CollectProcMacros<'a> {
@@ -256,7 +275,7 @@ impl<'a> Visitor<'a> for CollectProcMacros<'a> {
         let mut found_attr: Option<&'a ast::Attribute> = None;
 
         for attr in &item.attrs {
-            if is_proc_macro_attr(&attr) {
+            if is_proc_macro_attr(&attr) || attr.check_name(sym::rustc_proc_macro_lint) {
                 if let Some(prev_attr) = found_attr {
                     let prev_item = prev_attr.get_normal_item();
                     let item = attr.get_normal_item();
@@ -300,7 +319,7 @@ impl<'a> Visitor<'a> for CollectProcMacros<'a> {
             Some(attr) => attr,
         };
 
-        if !is_fn {
+        if !is_fn && !attr.check_name(sym::rustc_proc_macro_lint) {
             let msg = format!(
                 "the `#[{}]` attribute may only be used on bare functions",
                 pprust::path_to_string(&attr.get_normal_item().path),
@@ -330,6 +349,8 @@ impl<'a> Visitor<'a> for CollectProcMacros<'a> {
             self.collect_attr_proc_macro(item);
         } else if attr.check_name(sym::proc_macro) {
             self.collect_bang_proc_macro(item);
+        } else if attr.check_name(sym::rustc_proc_macro_lint) {
+            self.collect_lint(item);
         };
 
         let prev_in_root = mem::replace(&mut self.in_root, false);
@@ -357,7 +378,7 @@ impl<'a> Visitor<'a> for CollectProcMacros<'a> {
 //              // ...
 //          ];
 //      }
-fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro]) -> P<ast::Item> {
+fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro], lints: &[ProcMacroLint]) -> P<ast::Item> {
     let expn_id = cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
         AstPass::ProcMacroHarness,
@@ -372,9 +393,14 @@ fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro]) -> P<ast::Item> {
     let bridge = cx.ident_of("bridge", span);
     let client = cx.ident_of("client", span);
     let proc_macro_ty = cx.ident_of("ProcMacro", span);
+    let proc_macro_lint_ty = cx.ident_of("ProcMacroLint", span);
+    let proc_macro_decls_ty = cx.ident_of("ProcMacroDecls", span);
     let custom_derive = cx.ident_of("custom_derive", span);
     let attr = cx.ident_of("attr", span);
     let bang = cx.ident_of("bang", span);
+    let new = cx.ident_of("new", span);
+    let proc_macro_decls = cx.ident_of("_PROC_MACRO_DECLS", span);
+    let lint_decls = cx.ident_of("_LINT_DECLS", span);
 
     let decls = {
         let local_path =
@@ -416,10 +442,25 @@ fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro]) -> P<ast::Item> {
             .collect()
     };
 
-    let decls_static = cx
+    let lints = {
+        let proc_macro_lint_path =
+            cx.expr_path(cx.path(span, vec![proc_macro, bridge, client, proc_macro_lint_ty, new]));
+        lints
+            .iter()
+            .map(|m| {
+                cx.expr_call(
+                    span,
+                    proc_macro_lint_path.clone(),
+                    vec![cx.expr_str(m.span, m.lint_name.name)],
+                )
+            })
+            .collect()
+    };
+
+    let decls_macros = cx
         .item_static(
             span,
-            cx.ident_of("_DECLS", span),
+            proc_macro_decls.clone(),
             cx.ty_rptr(
                 span,
                 cx.ty(
@@ -435,6 +476,69 @@ fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro]) -> P<ast::Item> {
             cx.expr_vec_slice(span, decls),
         )
         .map(|mut i| {
+            let deprecated_attr = attr::mk_nested_word_item(Ident::new(sym::deprecated, span));
+            let allow_deprecated_attr =
+                attr::mk_list_item(Ident::new(sym::allow, span), vec![deprecated_attr]);
+            i.attrs.push(cx.attribute(allow_deprecated_attr));
+
+            i
+        });
+
+    let decls_lints = cx
+        .item_static(
+            span,
+            lint_decls.clone(),
+            cx.ty_rptr(
+                span,
+                cx.ty(
+                    span,
+                    ast::TyKind::Slice(cx.ty_path(
+                        cx.path(span, vec![proc_macro, bridge, client, proc_macro_lint_ty]),
+                    )),
+                ),
+                None,
+                ast::Mutability::Not,
+            ),
+            ast::Mutability::Not,
+            cx.expr_vec_slice(span, lints),
+        )
+        .map(|mut i| {
+            let deprecated_attr = attr::mk_nested_word_item(Ident::new(sym::deprecated, span));
+            let allow_deprecated_attr =
+                attr::mk_list_item(Ident::new(sym::allow, span), vec![deprecated_attr]);
+            i.attrs.push(cx.attribute(allow_deprecated_attr));
+
+            i
+        });
+    let decls_new = {
+        let proc_macro_decl_path =
+            cx.expr_path(cx.path(span, vec![proc_macro, bridge, client, proc_macro_decls_ty, new]));
+        cx.expr_call(
+            span,
+            proc_macro_decl_path.clone(),
+            vec![cx.expr_ident(span, proc_macro_decls), cx.expr_ident(span, lint_decls)],
+        )
+    };
+    let decls_static = cx
+        .item_static(
+            span,
+            cx.ident_of("_DECLS", span),
+            cx.ty_rptr(
+                span,
+                cx.ty(
+                    span,
+                    ast::TyKind::Path(
+                        None,
+                        cx.path(span, vec![proc_macro, bridge, client, proc_macro_decls_ty]),
+                    ),
+                ),
+                None,
+                ast::Mutability::Not,
+            ),
+            ast::Mutability::Not,
+            cx.expr_addr_of(span, decls_new),
+        )
+        .map(|mut i| {
             let attr = cx.meta_word(span, sym::rustc_proc_macro_decls);
             i.attrs.push(cx.attribute(attr));
 
@@ -446,9 +550,15 @@ fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro]) -> P<ast::Item> {
             i
         });
 
-    let block = cx.expr_block(
-        cx.block(span, vec![cx.stmt_item(span, krate), cx.stmt_item(span, decls_static)]),
-    );
+    let block = cx.expr_block(cx.block(
+        span,
+        vec![
+            cx.stmt_item(span, krate),
+            cx.stmt_item(span, decls_static),
+            cx.stmt_item(span, decls_macros),
+            cx.stmt_item(span, decls_lints),
+        ],
+    ));
 
     let anon_constant = cx.item_const(
         span,
