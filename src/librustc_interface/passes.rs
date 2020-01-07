@@ -440,9 +440,10 @@ fn configure_and_expand_inner<'a>(
             .map(|x| {
                 (
                     x.0,
-                    sess.maybe_proc_macro_lints
-                        .get_proc_macro_lint(&x.1)
-                        .expect("missing lint from proc_macro"),
+                    match sess.maybe_proc_macro_lints.get_proc_macro_lint(&x.1) {
+                        Some(x) => x,
+                        None => panic!("unknown proc_macro lint {}", &x.1) // TODO use proper diagnostic
+                    }
                 )
             })
             .collect();

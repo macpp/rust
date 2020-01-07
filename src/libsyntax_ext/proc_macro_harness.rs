@@ -240,8 +240,11 @@ impl<'a> CollectProcMacros<'a> {
 
     fn collect_lint(&mut self, item: &'a ast::Item) {
         if self.in_root && item.vis.node.is_pub() {
+            if item.ident.to_string() != item.ident.to_string().to_lowercase() {
+                self.handler.span_err(item.span, "lint names must be lower case");   
+            }
             self.lints.push(ProcMacroLint { span: item.span, lint_name: item.ident });
-        } else {
+        } /*else {
             let msg = if !self.in_root {
                 "lints declared by proc macro must \
                  currently reside in the root of the crate"
@@ -249,7 +252,7 @@ impl<'a> CollectProcMacros<'a> {
                 "proc_macro lints must be `pub`"
             };
             self.handler.span_err(item.span, msg);
-        }
+        }*/
     }
 }
 
