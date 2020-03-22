@@ -1800,6 +1800,7 @@ fn parse_pretty(
             ("hir,identified", true) => PpmHir(PpmIdentified),
             ("hir,typed", true) => PpmHir(PpmTyped),
             ("hir-tree", true) => PpmHirTree(PpmNormal),
+            ("hir-syn", true) => PpmHir(PpmSyn),
             ("mir", true) => PpmMir,
             ("mir-cfg", true) => PpmMirCFG,
             _ => {
@@ -1939,6 +1940,7 @@ pub enum PpSourceMode {
     PpmExpandedIdentified,
     PpmExpandedHygiene,
     PpmTyped,
+    PpmSyn,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -1964,7 +1966,7 @@ impl PpMode {
             | PpmHirTree(_)
             | PpmMir
             | PpmMirCFG => true,
-            PpmSource(PpmTyped) => panic!("invalid state"),
+            PpmSource(PpmTyped) | PpmSource(PpmSyn) => panic!("invalid state"),
         }
     }
 

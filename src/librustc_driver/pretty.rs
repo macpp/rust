@@ -83,6 +83,14 @@ where
             let annotation = TypedAnnotation { tcx, tables: Cell::new(&empty_tables) };
             tcx.dep_graph.with_ignore(|| f(&annotation, tcx.hir().krate()))
         }
+
+        PpmSyn => {
+            abort_on_err(tcx.analysis(LOCAL_CRATE), tcx.sess);
+
+            let empty_tables = ty::TypeckTables::empty(None);
+            let annotation = HirSyn { tcx, tables: Cell::new(&empty_tables) };
+            tcx.dep_graph.with_ignore(|| f(&annotation, tcx.hir().krate()))
+        }
         _ => panic!("Should use call_with_pp_support"),
     }
 }
@@ -355,6 +363,89 @@ impl<'a, 'tcx> pprust_hir::PpAnn for TypedAnnotation<'a, 'tcx> {
             _ => {}
         }
     }
+}
+
+struct HirSyn<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    tables: Cell<&'a ty::TypeckTables<'tcx>>,
+}
+
+impl<'b, 'tcx> HirPrinterSupport<'tcx> for HirSyn<'b, 'tcx> {
+    fn sess(&self) -> &Session {
+        &self.tcx.sess
+    }
+
+    fn hir_map(&self) -> Option<hir_map::Map<'tcx>> {
+        Some(self.tcx.hir())
+    }
+
+    fn pp_ann(&self) -> &dyn pprust_hir::PpAnn {
+        self
+    }
+}
+
+impl<'a, 'tcx> pprust_hir::PpAnn for HirSyn<'a, 'tcx> {
+    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested) {
+        let old_tables = self.tables.get();
+        if let pprust_hir::Nested::Body(id) = nested {
+            self.tables.set(self.tcx.body_tables(id));
+        }
+        pprust_hir::PpAnn::nested(&self.tcx.hir(), state, nested);
+        self.tables.set(old_tables);
+    }
+
+   fn pre(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) {
+    use hir::ExprKind;
+        match node {
+            pprust_hir::AnnNode::Expr(expr) => {
+                let source_map = self.tcx.sess.source_map();
+                let start = source_map.lookup_char_pos(expr.span.lo());
+                let data = HirSynData {
+                    ty: self.tables.get().expr_ty(expr).to_string(),
+                    fname: start.file.name.to_string(),
+                    line: start.line,
+                    col: start.col_display
+                };
+                let ser = rustc_serialize::json::encode(&data).unwrap();
+                match expr.kind {
+                    ExprKind::Block(_,_) => { }
+                    ExprKind::Loop(_,_,_)| ExprKind::Match(_,_,_) 
+                    | ExprKind::Field(_,_) | ExprKind::Path(_)=> {
+                        s.s.word( format!("#[hir_syn({})]",ser));
+                    }
+                    _ => {
+                        s.s.word( format!("#[hir_syn({})]",ser));
+                        s.popen();
+                    }
+                }
+                
+            },
+            _ => {}
+        }
+    }
+    fn post(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) {
+        use hir::ExprKind;
+        match node {
+            pprust_hir::AnnNode::Expr(expr) => {
+                match expr.kind {
+                    ExprKind::Block(_,_) => {}
+                    ExprKind::Loop(_,_,_)| ExprKind::Match(_,_,_) 
+                    | ExprKind::Field(_,_) | ExprKind::Path(_)=> { }
+                    _ => {
+                        s.pclose();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+#[derive(RustcEncodable,RustcDecodable)]
+struct HirSynData {
+    ty: String,
+    fname: String,
+    line: usize,
+    col: usize,
 }
 
 fn get_source(input: &Input, sess: &Session) -> (String, FileName) {
